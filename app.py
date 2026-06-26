@@ -28,7 +28,7 @@ from playwright.async_api import (
 )
 from pydantic import BaseModel, HttpUrl, field_validator
 
-from schema_audit import BUSINESS_TYPE_SCHEMAS, audit_page
+from schema_audit import audit_page
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -246,7 +246,23 @@ async def fetch_urls_from_sitemap(sitemap_url: str, max_pages: int) -> list[str]
 # Async Playwright crawler
 # ---------------------------------------------------------------------------
 
-async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str, business_type: str) -> dict:
+def _empty_page_result() -> dict:
+    return {
+        "page_type":          "general",
+        "schema_blocks":      0,
+        "schema_types_count": 0,
+        "schema_types_found": [],
+        "duplicate_types":    [],
+        "coverage": {
+            "present_expected":   [],
+            "suggested_relevant": [],
+            "suggested_helpful":  [],
+        },
+        "parse_errors": [],
+    }
+
+
+async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str) -> dict:
     """Crawl a single page and return the structured page result."""
     async with sem:
         page = await browser_context.new_page()
@@ -262,7 +278,7 @@ async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str, busines
                     timeout=JSONLD_WAIT_MS,
                 )
             except PlaywrightTimeout:
-                pass  # No JSON-LD appeared — proceed with empty result
+                pass
 
             raw_blocks = await page.evaluate("""
                 () => Array.from(
@@ -283,21 +299,9 @@ async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str, busines
             await page.close()
 
         if status == "ok":
-            result = audit_page(raw_blocks, business_type)
+            result = audit_page(raw_blocks, url)
         else:
-            result = {
-                "schema_blocks":      0,
-                "schema_types_count": 0,
-                "schema_types_found": [],
-                "duplicate_types":    [],
-                "coverage": {
-                    "expected_present":     [],
-                    "missing_critical":     [],
-                    "missing_important":    [],
-                    "missing_nice_to_have": [],
-                },
-                "parse_errors": [],
-            }
+            result = _empty_page_result()
 
         await asyncio.sleep(REQUEST_DELAY)
 
@@ -309,7 +313,7 @@ async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str, busines
         }
 
 
-async def crawl_pages(urls: list[str], business_type: str) -> list[dict]:
+async def crawl_pages(urls: list[str]) -> list[dict]:
     """Crawl all URLs with bounded concurrency, returning page result dicts."""
     sem = asyncio.Semaphore(CRAWL_CONCURRENCY)
 
@@ -317,7 +321,7 @@ async def crawl_pages(urls: list[str], business_type: str) -> list[dict]:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(user_agent=USER_AGENT)
         try:
-            tasks = [_crawl_page(sem, context, url, business_type) for url in urls]
+            tasks = [_crawl_page(sem, context, url) for url in urls]
             # return_exceptions=True: one bad page never aborts the whole audit.
             # Unexpected exceptions are caught below and converted to error rows.
             raw_results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -331,13 +335,7 @@ async def crawl_pages(urls: list[str], business_type: str) -> list[dict]:
             log.error("Unexpected error crawling %s: %s", url, outcome)
             results.append({
                 "url": url, "status": "error", "notes": str(outcome)[:200],
-                "schema_blocks": 0, "schema_types_count": 0,
-                "schema_types_found": [], "duplicate_types": [],
-                "coverage": {
-                    "expected_present": [], "missing_critical": [],
-                    "missing_important": [], "missing_nice_to_have": [],
-                },
-                "parse_errors": [],
+                **_empty_page_result(),
             })
         else:
             results.append(outcome)
@@ -363,16 +361,21 @@ async def audit(req: AuditRequest) -> dict:
     log.info("=== Audit request: sitemap=%s type=%s max=%d ===", sitemap_url, business_type, max_pages)
 
     urls = await fetch_urls_from_sitemap(sitemap_url, max_pages)
-    pages = await crawl_pages(urls, business_type)
+    pages = await crawl_pages(urls)
 
-    # Summary
-    ok_pages       = [p for p in pages if p["status"] == "ok"]
-    pages_error    = len([p for p in pages if p["status"] in ("timeout", "error")])
-    # "no schema" = no usable types found (blocks may exist but all failed to parse)
+    ok_pages = [p for p in pages if p["status"] == "ok"]
+    pages_error = len([p for p in pages if p["status"] in ("timeout", "error")])
     pages_no_schema = len([p for p in ok_pages if p["schema_types_count"] == 0])
-    pages_missing_critical = len([
-        p for p in ok_pages if p["coverage"]["missing_critical"]
+    pages_with_suggestions = len([
+        p for p in ok_pages
+        if p["coverage"]["suggested_relevant"] or p["coverage"]["suggested_helpful"]
     ])
+
+    # Count how many pages were classified as each type
+    type_counts: dict[str, int] = {}
+    for p in ok_pages:
+        pt = p.get("page_type", "general")
+        type_counts[pt] = type_counts.get(pt, 0) + 1
 
     return {
         "sitemap_url":   sitemap_url,
@@ -383,7 +386,8 @@ async def audit(req: AuditRequest) -> dict:
             "pages_ok":                len(ok_pages),
             "pages_error":             pages_error,
             "pages_no_schema":         pages_no_schema,
-            "pages_missing_critical":  pages_missing_critical,
+            "pages_with_suggestions":  pages_with_suggestions,
+            "page_types_detected":     type_counts,
         },
         "pages": pages,
     }

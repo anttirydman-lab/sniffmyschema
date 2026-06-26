@@ -2,20 +2,24 @@
 """
 schema_audit.py  —  detection-only module
 
-All JSON-LD extraction, type detection, duplicate analysis, and coverage
-reporting lives here. No I/O, no HTTP, no Sheets. Imported by app.py.
+All JSON-LD extraction, type detection, duplicate analysis, page-type
+classification, and coverage reporting lives here. No I/O, no HTTP.
+Imported by app.py.
 
-Detection logic is reviewed and stable — do not change without explicit review.
+Detection logic (extraction, recursive types, duplicates) is reviewed and
+stable — do not change without explicit review.
 """
 
 import json
 import logging
+import re
 from collections import Counter
+from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Business-type schema priority map
+# Business-type schema priority map  (site-level, kept for optional use)
 # ---------------------------------------------------------------------------
 
 BUSINESS_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
@@ -67,7 +71,77 @@ BUSINESS_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# JSON-LD extraction
+# Per-page-type expected schema sets  (Change 2)
+# Priority levels: "relevant" and "helpful" — suggestions, not requirements.
+# ---------------------------------------------------------------------------
+
+PAGE_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
+    "article": {
+        "Article":        "relevant",
+        "BreadcrumbList": "relevant",
+        "Person":         "helpful",
+        "Organization":   "helpful",
+        "ImageObject":    "helpful",
+    },
+    "product": {
+        "Product":        "relevant",
+        "Offer":          "relevant",
+        "AggregateRating": "relevant",
+        "Review":         "relevant",
+        "BreadcrumbList": "helpful",
+        "Organization":   "helpful",
+    },
+    "location": {
+        "LocalBusiness":             "relevant",
+        "Place":                     "relevant",
+        "GeoCoordinates":            "relevant",
+        "OpeningHoursSpecification": "relevant",
+        "Review":                    "helpful",
+        "AggregateRating":           "helpful",
+    },
+    "service": {
+        "Service":        "relevant",
+        "Organization":   "relevant",
+        "AggregateRating": "helpful",
+        "Review":         "helpful",
+        "FAQPage":        "helpful",
+        "BreadcrumbList": "helpful",
+    },
+    "homepage": {
+        "Organization":   "relevant",
+        "WebSite":        "relevant",
+        "BreadcrumbList": "helpful",
+        "SearchAction":   "helpful",
+    },
+    "general": {
+        "Organization":   "helpful",
+        "WebSite":        "helpful",
+        "BreadcrumbList": "helpful",
+        "WebPage":        "helpful",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Page-type URL pattern hints
+# ---------------------------------------------------------------------------
+
+_URL_HINTS: list[tuple[str, re.Pattern]] = [
+    ("article",  re.compile(r"/(blog|news|article|knowledge|guide|post)(/|$)", re.I)),
+    ("product",  re.compile(r"/(product|shop|item)(/|$)", re.I)),
+    ("location", re.compile(r"/(location|store|branch)(/|$)", re.I)),
+    ("service",  re.compile(r"/(services?)(/|$)", re.I)),
+]
+
+# Schema types that signal each page type  (checked first, higher confidence)
+_SCHEMA_SIGNALS: list[tuple[str, set[str]]] = [
+    ("article",  {"Article", "BlogPosting", "NewsArticle"}),
+    ("product",  {"Product", "Offer"}),
+    ("location", {"LocalBusiness", "Place", "Restaurant"}),
+    ("service",  {"Service"}),
+]
+
+# ---------------------------------------------------------------------------
+# JSON-LD extraction  (unchanged — reviewed and stable)
 # ---------------------------------------------------------------------------
 
 def extract_jsonld_from_blocks(raw_blocks: list[str]) -> tuple[list[dict], list[str]]:
@@ -105,7 +179,7 @@ def _ingest(data: object, schemas: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Type detection helpers
+# Type detection helpers  (unchanged — reviewed and stable)
 # ---------------------------------------------------------------------------
 
 def normalize_types(item: dict) -> set[str]:
@@ -152,7 +226,7 @@ def all_types_recursive(schemas: list[dict]) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Duplicate detection  (top-level only — intentional)
+# Duplicate detection  (unchanged — top-level only, intentional)
 # A Review nested inside each of N Product items is normal nesting, not a
 # duplicate declaration. Only repeated top-level schema items are flagged.
 # ---------------------------------------------------------------------------
@@ -170,52 +244,88 @@ def duplicate_types(schemas: list[dict]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Coverage report
+# Page-type classifier  (Change 1)
 # ---------------------------------------------------------------------------
 
-def coverage_report(schemas: list[dict], business_type: str) -> dict[str, list[str]]:
+def classify_page(url: str, found_types: set[str]) -> str:
     """
-    Compare recursively-found types against the expected set for this business type.
-    Returns four lists: expected_present, missing_critical, missing_important,
-    missing_nice_to_have.
+    Classify a page into a page type using schema types first (most reliable),
+    then URL path hints, then homepage detection, then fallback to general.
     """
-    expected    = BUSINESS_TYPE_SCHEMAS.get(business_type, BUSINESS_TYPE_SCHEMAS["other"])
-    found_types = all_types_recursive(schemas)
+    # 1. Schema-based signals (highest confidence)
+    for page_type, signals in _SCHEMA_SIGNALS:
+        if found_types & signals:
+            return page_type
 
-    present: list[str] = sorted(t for t in expected if t in found_types)
-    missing: dict[str, list[str]] = {"critical": [], "important": [], "nice-to-have": []}
+    # 2. Homepage detection
+    path = urlparse(url).path.rstrip("/")
+    if not path:
+        return "homepage"
+
+    # 3. URL path hints
+    for page_type, pattern in _URL_HINTS:
+        if pattern.search(path):
+            return page_type
+
+    return "general"
+
+
+# ---------------------------------------------------------------------------
+# Coverage report — suggestion-based  (Change 3)
+# ---------------------------------------------------------------------------
+
+def coverage_report(schemas: list[dict], url: str) -> dict:
+    """
+    Classify the page by type, then compare recursively-found schema types
+    against the expected set for that page type. Returns suggestions, not errors.
+    """
+    found_types = all_types_recursive(schemas)
+    page_type   = classify_page(url, found_types)
+    expected    = PAGE_TYPE_SCHEMAS.get(page_type, PAGE_TYPE_SCHEMAS["general"])
+
+    present: list[str]            = sorted(t for t in expected if t in found_types)
+    suggested: dict[str, list[str]] = {"relevant": [], "helpful": []}
     for t, priority in expected.items():
         if t not in found_types:
-            missing[priority].append(t)
+            suggested[priority].append(t)
 
     return {
-        "expected_present":     present,
-        "missing_critical":     sorted(missing["critical"]),
-        "missing_important":    sorted(missing["important"]),
-        "missing_nice_to_have": sorted(missing["nice-to-have"]),
+        "page_type":          page_type,
+        "present_expected":   present,
+        "suggested_relevant": sorted(suggested["relevant"]),
+        "suggested_helpful":  sorted(suggested["helpful"]),
     }
 
 
 # ---------------------------------------------------------------------------
-# Per-page audit  (called by app.py after Playwright extraction)
+# Per-page audit  (Change 5 — page-type classification is primary driver)
 # ---------------------------------------------------------------------------
 
-def audit_page(raw_blocks: list[str], business_type: str) -> dict:
+def audit_page(raw_blocks: list[str], url: str) -> dict:
     """
-    Given raw JSON-LD text blocks from a page and a business type, return the
-    full structured audit result for that page (excluding url/status/notes,
-    which the caller fills in).
+    Given raw JSON-LD text blocks and the page URL, return the full structured
+    audit result (excluding url/status/notes, which the caller fills in).
+
+    Page-type classification drives the coverage suggestions. The business_type
+    parameter is no longer needed here — classification is per-page.
     """
     schemas, parse_errors = extract_jsonld_from_blocks(raw_blocks)
     found = all_types_recursive(schemas)
 
     log.debug("  Recursive @types: %s", sorted(found))
 
+    cov = coverage_report(schemas, url)
+
     return {
+        "page_type":          cov["page_type"],
         "schema_blocks":      len(raw_blocks),
         "schema_types_count": len(found),
         "schema_types_found": sorted(found),
         "duplicate_types":    duplicate_types(schemas),
-        "coverage":           coverage_report(schemas, business_type),
-        "parse_errors":       parse_errors,
+        "coverage": {
+            "present_expected":   cov["present_expected"],
+            "suggested_relevant": cov["suggested_relevant"],
+            "suggested_helpful":  cov["suggested_helpful"],
+        },
+        "parse_errors": parse_errors,
     }
