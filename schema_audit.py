@@ -132,6 +132,30 @@ _URL_HINTS: list[tuple[str, re.Pattern]] = [
     ("service",  re.compile(r"/(services?)(/|$)", re.I)),
 ]
 
+# ---------------------------------------------------------------------------
+# Supporting (structural/plumbing) schema types
+# These are nested helpers rather than meaningful top-level schemas.
+# Exception: if a type appears in PAGE_TYPE_SCHEMAS for the page's classified
+# type, it is promoted to primary — it matters to the user for that page type.
+# ---------------------------------------------------------------------------
+
+SUPPORTING_TYPES: set[str] = {
+    "EntryPoint",
+    "PropertyValueSpecification",
+    "ListItem",
+    "ReadAction",
+    "CommentAction",
+    "SearchAction",
+    "Action",
+    "ImageObject",
+    "ContactPoint",
+    "PostalAddress",
+    "GeoCoordinates",
+    "QuantitativeValue",
+    "MonetaryAmount",
+    "OpeningHoursSpecification",
+}
+
 # Schema types that signal each page type  (checked first, higher confidence)
 _SCHEMA_SIGNALS: list[tuple[str, set[str]]] = [
     ("article",  {"Article", "BlogPosting", "NewsArticle"}),
@@ -315,13 +339,24 @@ def audit_page(raw_blocks: list[str], url: str) -> dict:
     log.debug("  Recursive @types: %s", sorted(found))
 
     cov = coverage_report(schemas, url)
+    page_type = cov["page_type"]
+
+    # Types expected for this page type — these are promoted to primary even
+    # if they appear in SUPPORTING_TYPES (e.g. GeoCoordinates on a location page).
+    expected_for_page = set(PAGE_TYPE_SCHEMAS.get(page_type, PAGE_TYPE_SCHEMAS["general"]))
+
+    primary    = sorted(t for t in found if t not in SUPPORTING_TYPES or t in expected_for_page)
+    supporting = sorted(t for t in found if t in SUPPORTING_TYPES and t not in expected_for_page)
 
     return {
-        "page_type":          cov["page_type"],
-        "schema_blocks":      len(raw_blocks),
-        "schema_types_count": len(found),
-        "schema_types_found": sorted(found),
-        "duplicate_types":    duplicate_types(schemas),
+        "page_type":           page_type,
+        "schema_blocks":       len(raw_blocks),
+        "schema_types_count":  len(found),
+        "schema_types_found":  sorted(found),
+        "primary_types":       primary,
+        "primary_types_count": len(primary),
+        "supporting_types":    supporting,
+        "duplicate_types":     duplicate_types(schemas),
         "coverage": {
             "present_expected":   cov["present_expected"],
             "suggested_relevant": cov["suggested_relevant"],

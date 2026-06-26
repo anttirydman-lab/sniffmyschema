@@ -248,11 +248,14 @@ async def fetch_urls_from_sitemap(sitemap_url: str, max_pages: int) -> list[str]
 
 def _empty_page_result() -> dict:
     return {
-        "page_type":          "general",
-        "schema_blocks":      0,
-        "schema_types_count": 0,
-        "schema_types_found": [],
-        "duplicate_types":    [],
+        "page_type":           "general",
+        "schema_blocks":       0,
+        "schema_types_count":  0,
+        "schema_types_found":  [],
+        "primary_types":       [],
+        "primary_types_count": 0,
+        "supporting_types":    [],
+        "duplicate_types":     [],
         "coverage": {
             "present_expected":   [],
             "suggested_relevant": [],
