@@ -268,10 +268,19 @@ def _empty_page_result() -> dict:
 async def _crawl_page(sem: asyncio.Semaphore, browser_context, url: str) -> dict:
     """Crawl a single page and return the structured page result."""
     async with sem:
-        page = await browser_context.new_page()
         status = "ok"
         notes  = ""
         raw_blocks: list[str] = []
+
+        try:
+            page = await browser_context.new_page()
+        except Exception as exc:
+            log.error("  BROWSER CLOSED  %s  %s", url, exc)
+            return {
+                "url": url, "status": "error",
+                "notes": f"Browser unavailable: {str(exc)[:180]}",
+                **_empty_page_result(),
+            }
 
         try:
             await page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
@@ -321,7 +330,15 @@ async def crawl_pages(urls: list[str]) -> list[dict]:
     sem = asyncio.Semaphore(CRAWL_CONCURRENCY)
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-setuid-sandbox",
+            ],
+        )
         context = await browser.new_context(user_agent=USER_AGENT)
         try:
             tasks = [_crawl_page(sem, context, url) for url in urls]
