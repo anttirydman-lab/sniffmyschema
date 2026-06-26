@@ -14,64 +14,46 @@ import json
 import logging
 import re
 from collections import Counter
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Business-type schema priority map  (site-level, kept for optional use)
+# Business-type baseline  (site-level expectations, evaluated once per audit)
 # ---------------------------------------------------------------------------
 
-BUSINESS_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
+BUSINESS_TYPE_BASELINE: dict[str, dict[str, str]] = {
     "ecommerce": {
-        "Product":         "critical",
-        "Offer":           "critical",
-        "Organization":    "critical",
-        "AggregateOffer":  "important",
-        "Review":          "important",
-        "AggregateRating": "important",
-        "BreadcrumbList":  "important",
-        "WebSite":         "nice-to-have",
+        "Organization": "relevant",
+        "WebSite":      "relevant",
     },
     "local_business": {
-        "LocalBusiness":             "critical",
-        "Organization":              "critical",
-        "Place":                     "important",
-        "GeoCoordinates":            "important",
-        "OpeningHoursSpecification": "important",
-        "Review":                    "important",
-        "AggregateRating":           "important",
-        "BreadcrumbList":            "nice-to-have",
+        "Organization": "relevant",
+        "WebSite":      "relevant",
+        "LocalBusiness": "relevant",
     },
     "blog_media": {
-        "Article":        "critical",
-        "BlogPosting":    "critical",
-        "Organization":   "critical",
-        "NewsArticle":    "important",
-        "Person":         "important",
-        "BreadcrumbList": "important",
-        "WebSite":        "nice-to-have",
+        "Organization": "relevant",
+        "WebSite":      "relevant",
     },
     "professional_services": {
-        "Organization":    "critical",
-        "Service":         "critical",
-        "LocalBusiness":   "important",
-        "FAQPage":         "important",
-        "Review":          "important",
-        "AggregateRating": "important",
-        "BreadcrumbList":  "nice-to-have",
+        "Organization": "relevant",
+        "WebSite":      "relevant",
+    },
+    "restaurant": {
+        "Organization": "relevant",
+        "WebSite":      "relevant",
+        "LocalBusiness": "relevant",
+        "Restaurant":    "relevant",
     },
     "other": {
-        "Organization":   "critical",
-        "WebSite":        "important",
-        "WebPage":        "important",
-        "FAQPage":        "nice-to-have",
-        "BreadcrumbList": "nice-to-have",
+        "Organization": "helpful",
+        "WebSite":      "helpful",
     },
 }
 
 # ---------------------------------------------------------------------------
-# Per-page-type expected schema sets  (Change 2)
+# Per-page-type expected schema sets  (page-specific only, no site-wide types)
 # Priority levels: "relevant" and "helpful" — suggestions, not requirements.
 # ---------------------------------------------------------------------------
 
@@ -80,16 +62,14 @@ PAGE_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
         "Article":        "relevant",
         "BreadcrumbList": "relevant",
         "Person":         "helpful",
-        "Organization":   "helpful",
         "ImageObject":    "helpful",
     },
     "product": {
-        "Product":        "relevant",
-        "Offer":          "relevant",
+        "Product":         "relevant",
+        "Offer":           "relevant",
         "AggregateRating": "relevant",
-        "Review":         "relevant",
-        "BreadcrumbList": "helpful",
-        "Organization":   "helpful",
+        "Review":          "relevant",
+        "BreadcrumbList":  "helpful",
     },
     "location": {
         "LocalBusiness":             "relevant",
@@ -100,36 +80,53 @@ PAGE_TYPE_SCHEMAS: dict[str, dict[str, str]] = {
         "AggregateRating":           "helpful",
     },
     "service": {
-        "Service":        "relevant",
-        "Organization":   "relevant",
+        "Service":         "relevant",
         "AggregateRating": "helpful",
-        "Review":         "helpful",
-        "FAQPage":        "helpful",
-        "BreadcrumbList": "helpful",
+        "Review":          "helpful",
+        "FAQPage":         "helpful",
+        "BreadcrumbList":  "helpful",
     },
     "homepage": {
-        "Organization":   "relevant",
-        "WebSite":        "relevant",
         "BreadcrumbList": "helpful",
         "SearchAction":   "helpful",
     },
+    "contact": {
+        "ContactPoint":  "relevant",
+        "PostalAddress": "helpful",
+    },
+    "about": {
+        "AboutPage": "helpful",
+    },
+    "menu": {
+        "Menu":       "relevant",
+        "Restaurant": "relevant",
+    },
+    "booking": {
+        "Reservation": "helpful",
+    },
+    "faq": {
+        "FAQPage": "relevant",
+    },
     "general": {
-        "Organization":   "helpful",
-        "WebSite":        "helpful",
         "BreadcrumbList": "helpful",
         "WebPage":        "helpful",
     },
 }
 
 # ---------------------------------------------------------------------------
-# Page-type URL pattern hints
+# Page-type URL pattern hints  (English + Spanish, case-insensitive)
 # ---------------------------------------------------------------------------
 
 _URL_HINTS: list[tuple[str, re.Pattern]] = [
-    ("article",  re.compile(r"/(blog|news|article|knowledge|guide|post)(/|$)", re.I)),
-    ("product",  re.compile(r"/(product|shop|item)(/|$)", re.I)),
-    ("location", re.compile(r"/(location|store|branch)(/|$)", re.I)),
-    ("service",  re.compile(r"/(services?)(/|$)", re.I)),
+    ("article",  re.compile(r"/(blog|news|article|knowledge|guide|post|noticias|articulo)(/|$)", re.I)),
+    ("product",  re.compile(r"/(product|shop|item|store|producto|productos|tienda)(/|$)", re.I)),
+    ("location", re.compile(r"/(location|branch|sede|ubicacion|local)(/|$)", re.I)),
+    ("service",  re.compile(r"/(services?|servicios?)(/|$)", re.I)),
+    ("contact",  re.compile(r"/(contact|contact-us|contacto|contactanos|contactenos)(/|$)", re.I)),
+    ("about",    re.compile(r"/(about|about-us|quienes-somos|sobre-nosotros|nosotros)(/|$)", re.I)),
+    ("menu",     re.compile(r"/(menu|men[uú%]|carta)(/|$)", re.I)),
+    ("booking",  re.compile(r"/(book|book-online|booking|reservations?|reservas?|reservar)(/|$)", re.I)),
+    ("faq",      re.compile(r"/(faqs?|preguntas|preguntas-frecuentes)(/|$)", re.I)),
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,6 +159,8 @@ _SCHEMA_SIGNALS: list[tuple[str, set[str]]] = [
     ("product",  {"Product", "Offer"}),
     ("location", {"LocalBusiness", "Place", "Restaurant"}),
     ("service",  {"Service"}),
+    ("faq",      {"FAQPage"}),
+    ("menu",     {"Menu"}),
 ]
 
 # ---------------------------------------------------------------------------
@@ -268,7 +267,7 @@ def duplicate_types(schemas: list[dict]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Page-type classifier  (Change 1)
+# Page-type classifier
 # ---------------------------------------------------------------------------
 
 def classify_page(url: str, found_types: set[str]) -> str:
@@ -276,17 +275,14 @@ def classify_page(url: str, found_types: set[str]) -> str:
     Classify a page into a page type using schema types first (most reliable),
     then URL path hints, then homepage detection, then fallback to general.
     """
-    # 1. Schema-based signals (highest confidence)
     for page_type, signals in _SCHEMA_SIGNALS:
         if found_types & signals:
             return page_type
 
-    # 2. Homepage detection
-    path = urlparse(url).path.rstrip("/")
+    path = unquote(urlparse(url).path).rstrip("/")
     if not path:
         return "homepage"
 
-    # 3. URL path hints
     for page_type, pattern in _URL_HINTS:
         if pattern.search(path):
             return page_type
@@ -295,19 +291,19 @@ def classify_page(url: str, found_types: set[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Coverage report — suggestion-based  (Change 3)
+# Per-page coverage report  (page-specific expectations only)
 # ---------------------------------------------------------------------------
 
 def coverage_report(schemas: list[dict], url: str) -> dict:
     """
     Classify the page by type, then compare recursively-found schema types
-    against the expected set for that page type. Returns suggestions, not errors.
+    against page-type-specific expectations only (not site-wide baseline).
     """
     found_types = all_types_recursive(schemas)
     page_type   = classify_page(url, found_types)
     expected    = PAGE_TYPE_SCHEMAS.get(page_type, PAGE_TYPE_SCHEMAS["general"])
 
-    present: list[str]            = sorted(t for t in expected if t in found_types)
+    present: list[str] = sorted(t for t in expected if t in found_types)
     suggested: dict[str, list[str]] = {"relevant": [], "helpful": []}
     for t, priority in expected.items():
         if t not in found_types:
@@ -322,7 +318,34 @@ def coverage_report(schemas: list[dict], url: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Per-page audit  (Change 5 — page-type classification is primary driver)
+# Site-level report  (runs once per audit, not per page)
+# ---------------------------------------------------------------------------
+
+def site_level_report(all_page_types: list[set[str]], business_type: str) -> dict:
+    """
+    Compare the union of all schema types found across the entire site against
+    the business-type baseline. A site-wide schema (e.g. Organization) only
+    needs to exist on ONE page to count as present.
+    """
+    baseline    = BUSINESS_TYPE_BASELINE.get(business_type, BUSINESS_TYPE_BASELINE["other"])
+    site_union  = set().union(*all_page_types) if all_page_types else set()
+
+    present: list[str] = sorted(t for t in baseline if t in site_union)
+    missing: dict[str, list[str]] = {"relevant": [], "helpful": []}
+    for t, priority in baseline.items():
+        if t not in site_union:
+            missing[priority].append(t)
+
+    return {
+        "business_type":               business_type,
+        "site_schemas_present":        present,
+        "site_schemas_missing_relevant": sorted(missing["relevant"]),
+        "site_schemas_missing_helpful":  sorted(missing["helpful"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Per-page audit
 # ---------------------------------------------------------------------------
 
 def audit_page(raw_blocks: list[str], url: str) -> dict:
@@ -330,8 +353,8 @@ def audit_page(raw_blocks: list[str], url: str) -> dict:
     Given raw JSON-LD text blocks and the page URL, return the full structured
     audit result (excluding url/status/notes, which the caller fills in).
 
-    Page-type classification drives the coverage suggestions. The business_type
-    parameter is no longer needed here — classification is per-page.
+    Page-type classification drives per-page coverage suggestions.
+    Site-wide baseline is handled separately by site_level_report().
     """
     schemas, parse_errors = extract_jsonld_from_blocks(raw_blocks)
     found = all_types_recursive(schemas)
@@ -341,8 +364,6 @@ def audit_page(raw_blocks: list[str], url: str) -> dict:
     cov = coverage_report(schemas, url)
     page_type = cov["page_type"]
 
-    # Types expected for this page type — these are promoted to primary even
-    # if they appear in SUPPORTING_TYPES (e.g. GeoCoordinates on a location page).
     expected_for_page = set(PAGE_TYPE_SCHEMAS.get(page_type, PAGE_TYPE_SCHEMAS["general"]))
 
     primary    = sorted(t for t in found if t not in SUPPORTING_TYPES or t in expected_for_page)

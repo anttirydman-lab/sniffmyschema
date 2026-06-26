@@ -28,7 +28,7 @@ from playwright.async_api import (
 )
 from pydantic import BaseModel, HttpUrl, field_validator
 
-from schema_audit import audit_page
+from schema_audit import audit_page, site_level_report
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -75,7 +75,7 @@ app.add_middleware(
 # Request / response models
 # ---------------------------------------------------------------------------
 
-BusinessType = Literal["ecommerce", "local_business", "blog_media", "professional_services", "other"]
+BusinessType = Literal["ecommerce", "local_business", "blog_media", "professional_services", "restaurant", "other"]
 
 
 class AuditRequest(BaseModel):
@@ -374,16 +374,20 @@ async def audit(req: AuditRequest) -> dict:
         if p["coverage"]["suggested_relevant"] or p["coverage"]["suggested_helpful"]
     ])
 
-    # Count how many pages were classified as each type
     type_counts: dict[str, int] = {}
     for p in ok_pages:
         pt = p.get("page_type", "general")
         type_counts[pt] = type_counts.get(pt, 0) + 1
 
+    # Site-level report: union of all found types across pages, checked once
+    all_page_types = [set(p["schema_types_found"]) for p in ok_pages]
+    site_report = site_level_report(all_page_types, business_type)
+
     return {
         "sitemap_url":   sitemap_url,
         "business_type": business_type,
         "audited_at":    datetime.now(timezone.utc).isoformat(),
+        "site_level":    site_report,
         "summary": {
             "total_pages":             len(pages),
             "pages_ok":                len(ok_pages),
