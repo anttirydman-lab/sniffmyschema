@@ -124,7 +124,7 @@ _URL_HINTS: list[tuple[str, re.Pattern]] = [
     ("service",  re.compile(r"/(services?|servicios?)(/|$)", re.I)),
     ("contact",  re.compile(r"/(contact|contact-us|contacto|contactanos|contactenos)(/|$)", re.I)),
     ("about",    re.compile(r"/(about|about-us|quienes-somos|sobre-nosotros|nosotros)(/|$)", re.I)),
-    ("menu",     re.compile(r"/(menu|men[uú%]|carta)(/|$)", re.I)),
+    ("menu",     re.compile(r"/(menu|menú|carta)(/|$)", re.I)),
     ("booking",  re.compile(r"/(book|book-online|booking|reservations?|reservas?|reservar)(/|$)", re.I)),
     ("faq",      re.compile(r"/(faqs?|preguntas|preguntas-frecuentes)(/|$)", re.I)),
 ]
@@ -159,8 +159,6 @@ _SCHEMA_SIGNALS: list[tuple[str, set[str]]] = [
     ("product",  {"Product", "Offer"}),
     ("location", {"LocalBusiness", "Place", "Restaurant"}),
     ("service",  {"Service"}),
-    ("faq",      {"FAQPage"}),
-    ("menu",     {"Menu"}),
 ]
 
 # ---------------------------------------------------------------------------
