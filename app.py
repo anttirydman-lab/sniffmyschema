@@ -56,9 +56,9 @@ JSONLD_WAIT_MS       = 3_000    # ms — bounded wait for JSON-LD tags to appear
 REQUEST_DELAY        = 1.0      # seconds — politeness delay between page loads
 CRAWL_CONCURRENCY    = 3        # simultaneous Playwright pages
 SITEMAP_MAX_PAGES    = 500      # hard cap on total page URLs collected
-SITEMAP_MAX_FETCHES  = 50       # hard cap on total sitemap files fetched
+SITEMAP_MAX_FETCHES  = 75       # hard cap on total sitemap files fetched
 HTTP_TIMEOUT         = 15.0     # seconds — sitemap fetch timeout
-MAX_AUDIT_SECONDS    = 600      # seconds — max runtime before a job is auto-failed
+MAX_AUDIT_SECONDS    = 1800     # seconds — max runtime before a job is auto-failed (30 min)
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
